@@ -1,143 +1,165 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.express as px
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
+import plotly.graph_objects as go
+from sklearn.cluster import KMeans
 
-# 1. PAGE CONFIGURATION
+# App Configuration
 st.set_page_config(
-    page_title="E-Commerce B2B Analytics Dashboard",
-    page_icon="📊",
+    page_title="LogiRoute Fleet Optimizer",
+    page_icon="🚚",
     layout="wide"
 )
 
-st.title("📊 Customer Lifetime Value & Churn Risk Dashboard")
+# Dark Fleet Management UI Adjustments
 st.markdown("""
-This dashboard helps account managers identify high-value clients at risk of churning. 
-It uses a **Random Forest Classifier** trained dynamically on customer behavioral data.
-""")
+    <style>
+    div[data-testid="metric-container"] {
+        background-color: #111827;
+        border: 1px solid #1f2937;
+        padding: 16px;
+        border-radius: 10px;
+    }
+    div[data-testid="stSidebar"] { background-color: #0b0f19; }
+    </style>
+""", unsafe_allow_html=True)
 
-# 2. DATA GENERATION (MOCK BUSINESS DATA)
-@st.cache_data
-def load_mock_data():
-    np.random.seed(42)
-    n_customers = 400
+st.title("🚚 LogiRoute Last-Mile Fleet Dispatcher")
+st.markdown("🔒 **Business Problem:** Minimizing fuel overheads and route overlaps by algorithmically clustering delivery destinations for local fleets.")
+
+# --- SIDEBAR CONFIGURATION ---
+st.sidebar.header("📦 Fleet Parameters")
+
+available_drivers = st.sidebar.slider(
+    "Number of Active Drivers (Fleets)",
+    min_value=2,
+    max_value=6,
+    value=3
+)
+
+total_packages = st.sidebar.slider(
+    "Total Outstanding Packages Today",
+    min_value=10,
+    max_value=100,
+    value=40,
+    step=5
+)
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("📍 Central Hub Coordinates")
+hub_lat = st.sidebar.number_input("Warehouse Latitude", value=19.0760)  # Defaults near Mumbai region
+hub_lon = st.sidebar.number_input("Warehouse Longitude", value=72.8777)
+
+# --- SIMULATE REAL RANDOM LOCATION POINTS ---
+@st.cache_data(ttl=600)
+def generate_delivery_points(num_points, h_lat, h_lon):
+    np.random.seed(42) # Keeps layout consistent across slider changes
+    # Generate random delivery drop-offs within a 15km radius of the warehouse hub
+    lats = h_lat + np.random.uniform(-0.1, 0.1, num_points)
+    lons = h_lon + np.random.uniform(-0.1, 0.1, num_points)
     
-    customer_ids = [f"CUST-{i:04d}" for i in range(1, n_customers + 1)]
-    tenure_months = np.random.randint(1, 48, size=n_customers)
-    monthly_charges = np.random.uniform(50, 500, size=n_customers)
-    total_support_calls = np.random.randint(0, 10, size=n_customers)
-    clv = (monthly_charges * tenure_months) * np.random.uniform(0.8, 1.2, size=n_customers)
+    # Randomly assign package weights (kg) and urgency priorities
+    weights = np.random.uniform(0.5, 15.0, num_points)
+    priorities = np.random.choice(["Standard", "Express", "Same-Day Priority"], num_points, p=[0.5, 0.3, 0.2])
     
-    # Logic to make churn look realistic
-    churn_probability = 1 / (1 + np.exp(-(-2 + 0.5 * total_support_calls - 0.04 * tenure_months)))
-    churned = (np.random.rand(n_customers) < churn_probability).astype(int)
-    
-    df = pd.DataFrame({
-        "CustomerID": customer_ids,
-        "TenureMonths": tenure_months,
-        "MonthlyCharges": np.round(monthly_charges, 2),
-        "TotalSupportCalls": total_support_calls,
-        "CLV": np.round(clv, 2),
-        "Churn": churned
+    return pd.DataFrame({
+        "Latitude": lats,
+        "Longitude": lons,
+        "Payload_Weight_KG": weights,
+        "Priority": priorities
     })
-    return df
 
-df = load_mock_data()
+df_deliveries = generate_delivery_points(total_packages, hub_lat, hub_lon)
 
-# 3. MACHINE LEARNING MODEL TRAINING
-@st.cache_resource
-def train_model(data):
-    X = data[["TenureMonths", "MonthlyCharges", "TotalSupportCalls", "CLV"]]
-    y = data["Churn"]
-    
-    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-    
-    model = RandomForestClassifier(random_state=42, max_depth=5)
-    model.fit(X_train, y_train)
-    return model
+# --- ALGORITHMIC CLUSTERING ENGINE (K-MEANS) ---
+# Coordinates vector matrix extraction
+X = df_deliveries[["Latitude", "Longitude"]]
 
-model = train_model(df)
+# Run KMeans clustering to assign packages to the closest geometric driver group
+kmeans = KMeans(n_clusters=available_drivers, random_state=42, n_init=10)
+df_deliveries["Driver_ID"] = kmeans.fit_predict(X) + 1 # Dynamic ID assignment (Driver 1, Driver 2...)
 
-# Add predictions back to the core dataframe
-X_all = df[["TenureMonths", "MonthlyCharges", "TotalSupportCalls", "CLV"]]
-df["Churn_Risk_Prob"] = model.predict_proba(X_all)[:, 1]
+# Calculate operational metrics
+total_weight = df_deliveries["Payload_Weight_KG"].sum()
+avg_packages_per_driver = total_packages / available_drivers
 
-# 4. SIDEBAR CONTROLS
-st.sidebar.header("🎯 Dashboard Filters")
-clv_threshold = st.sidebar.slider(
-    "Minimum Customer Lifetime Value (CLV)", 
-    int(df["CLV"].min()), 
-    int(df["CLV"].max()), 
-    int(df["CLV"].median())
-)
-
-risk_threshold = st.sidebar.slider(
-    "Churn Risk Probability Threshold", 
-    0.0, 1.0, 0.50, step=0.05
-)
-
-filtered_df = df[(df["CLV"] >= clv_threshold) & (df["Churn_Risk_Prob"] >= risk_threshold)]
-
-# 5. MAIN KPI METRICS
-st.subheader("📈 Business Performance Overview")
-kpi1, kpi2, kpi3 = st.columns(3)
-
-with kpi1:
-    st.metric(label="Total Portfolio Value", value=f"${df['CLV'].sum():,.2f}")
-with kpi2:
-    at_risk_count = df[df["Churn_Risk_Prob"] >= 0.5].shape[0]
-    st.metric(label="Customers At High Risk (>50%)", value=at_risk_count, delta=f"{at_risk_count/len(df)*100:.1f}% of base", delta_color="inverse")
-with kpi3:
-    st.metric(label="Average CLV", value=f"${df['CLV'].mean():,.2f}")
-
-st.markdown("---")
-
-# 6. CHARTS & VISUALIZATIONS
-col1, col2 = st.columns(2)
+# --- UI VIEW DISPLAY ---
+st.subheader("📊 Dispatch Operations Metrics")
+col1, col2, col3, col4 = st.columns(4)
 
 with col1:
-    st.subheader("Support Calls vs. Churn Risk Proximity")
-    fig_scatter = px.scatter(
-        df, 
-        x="TotalSupportCalls", 
-        y="Churn_Risk_Prob", 
-        color="Churn",
-        size="MonthlyCharges",
-        hover_data=["CustomerID"],
-        labels={"TotalSupportCalls": "Support Desk Interactions", "Churn_Risk_Prob": "Predicted Churn Probability"},
-        color_continuous_scale=px.colors.sequential.Bluered
-    )
-    st.plotly_chart(fig_scatter, use_container_width=True)
-
+    st.metric("Total Fleet Size Assigned", f"{available_drivers} Active Drivers")
 with col2:
-    st.subheader("Distribution of Customer Value (CLV)")
-    fig_hist = px.histogram(
-        df, 
-        x="CLV", 
-        color="Churn", 
-        barmode="overlay",
-        labels={"CLV": "Lifetime Value ($)"},
-        color_discrete_sequence=["#2ca02c", "#d62728"]
-    )
-    st.plotly_chart(fig_hist, use_container_width=True)
+    st.metric("Active Deliveries Routed", f"{total_packages} Drop-offs")
+with col3:
+    st.metric("Total Cargo manifest Weight", f"{total_weight:.1f} KG")
+with col4:
+    st.metric("Avg Load Per Driver", f"{avg_packages_per_driver:.1f} Parcels")
 
-# 7. ACTIONABLE INSIGHTS TABLE
 st.markdown("---")
-st.subheader("🚨 Action Items: High-Value Clients to Intervene")
 
-display_cols = ["CustomerID", "TenureMonths", "MonthlyCharges", "TotalSupportCalls", "CLV", "Churn_Risk_Prob"]
-action_df = filtered_df[display_cols].sort_values(by="Churn_Risk_Prob", ascending=False)
+# Split Dashboard Workspace Layout
+map_col, manifest_col = st.columns([3, 2])
 
-if not action_df.empty:
-    st.dataframe(
-        action_df.style.format({
-            "MonthlyCharges": "${:.2f}",
-            "CLV": "${:.2f}",
-            "Churn_Risk_Prob": "{:.1%}"
-        }), 
-        use_container_width=True
+with map_col:
+    st.subheader("🗺️ Algorithmic Fleet Allocation Map")
+    st.caption("Each unique colored node group represents a highly optimized, distinct zone assigned to a separate delivery driver.")
+    
+    fig = go.Figure()
+    
+    # 1. Plot the Central Depot / Warehouse Hub
+    fig.add_trace(go.Scatter(
+        x=[hub_lon], y=[hub_lat],
+        mode='markers',
+        name='🏢 Central Logistics Hub',
+        marker=dict(size=16, color='#ef4444', symbol='square'),
+        hovertemplate="<b>Central Distribution Center</b><extra></extra>"
+    ))
+    
+    # 2. Plot clustered package allocations iteratively per assigned driver
+    colors = ['#10b981', '#3b82f6', '#8b5cf6', '#f59e0b', '#ec4899', '#14b8a6']
+    
+    for driver in range(1, available_drivers + 1):
+        driver_df = df_deliveries[df_deliveries["Driver_ID"] == driver]
+        color_assigned = colors[(driver - 1) % len(colors)]
+        
+        # Plot drop points
+        fig.add_trace(go.Scatter(
+            x=driver_df["Longitude"], y=driver_df["Latitude"],
+            mode='markers+text',
+            name=f"🚛 Driver Group {driver} Zone",
+            marker=dict(size=9, color=color_assigned, symbol='circle'),
+            hovertemplate="<b>Driver:</b> " + str(driver) + "<br><b>Weight:</b> %{text} KG<extra></extra>",
+            text=driver_df["Payload_Weight_KG"].round(1).astype(str)
+        ))
+        
+    fig.update_layout(
+        template='plotly_dark',
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        margin=dict(l=10, r=10, t=10, b=10),
+        height=480,
+        xaxis=dict(title="Longitude Coordinate Points", showgrid=True, gridcolor='#232a3b'),
+        yaxis=dict(title="Latitude Coordinate Points", showgrid=True, gridcolor='#232a3b'),
+        hovermode="closest"
     )
-else:
-    st.success("No customers match your risk profile criteria. Keep up the good work!")
+    st.plotly_chart(fig, use_container_width=True)
+
+with manifest_col:
+    st.subheader("📋 Digital Freight Manifest Sheets")
+    
+    selected_driver_view = st.selectbox(
+        "Filter Checklist by Route Assignment:",
+        options=[f"Driver {i}" for i in range(1, available_drivers + 1)]
+    )
+    
+    # Extract numerical index identifier
+    driver_num = int(selected_driver_view.split(" ")[1])
+    filtered_manifest = df_deliveries[df_deliveries["Driver_ID"] == driver_num]
+    
+    # Format and present clean layout lists
+    presentation_df = filtered_manifest[["Payload_Weight_KG", "Priority", "Latitude", "Longitude"]].copy()
+    presentation_df["Payload_Weight_KG"] = presentation_df["Payload_Weight_KG"].round(2).astype(str) + " kg"
+    
+    st.markdown(f"**Total parcels assigned to this route:** {len(presentation_df)}")
+    st.dataframe(presentation_df, hide_index=True, use_container_width=True)
