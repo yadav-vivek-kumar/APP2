@@ -1,165 +1,128 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
-import plotly.graph_objects as go
-from sklearn.cluster import KMeans
+import plotly.express as px
 
-# App Configuration
+# --- INITIALIZE PAGE ---
 st.set_page_config(
-    page_title="LogiRoute Fleet Optimizer",
-    page_icon="🚚",
+    page_title="Flat Availability Hub",
+    page_icon="🏢",
     layout="wide"
 )
 
-# Dark Fleet Management UI Adjustments
-st.markdown("""
-    <style>
-    div[data-testid="metric-container"] {
-        background-color: #111827;
-        border: 1px solid #1f2937;
-        padding: 16px;
-        border-radius: 10px;
-    }
-    div[data-testid="stSidebar"] { background-color: #0b0f19; }
-    </style>
-""", unsafe_allow_html=True)
+# --- SIMULATED APARTMENT DATABASE ---
+if "flats" not in st.session_state:
+    st.session_state.flats = pd.DataFrame([
+        {"Flat_No": "101", "Floor": "1st", "BHK": "1 BHK", "Rent_USD": 1200, "Status": "Available", "Tenant": "-"},
+        {"Flat_No": "102", "Floor": "1st", "BHK": "2 BHK", "Rent_USD": 1800, "Status": "Occupied", "Tenant": "Sarah Jenkins"},
+        {"Flat_No": "201", "Floor": "2nd", "BHK": "2 BHK", "Rent_USD": 1850, "Status": "Available", "Tenant": "-"},
+        {"Flat_No": "202", "Floor": "2nd", "BHK": "3 BHK", "Rent_USD": 2500, "Status": "Maintenance", "Tenant": "-"},
+        {"Flat_No": "301", "Floor": "3rd", "BHK": "1 BHK", "Rent_USD": 1250, "Status": "Occupied", "Tenant": "Michael Chang"},
+        {"Flat_No": "302", "Floor": "3rd", "BHK": "3 BHK", "Rent_USD": 2600, "Status": "Available", "Tenant": "-"},
+    ])
 
-st.title("🚚 LogiRoute Last-Mile Fleet Dispatcher")
-st.markdown("🔒 **Business Problem:** Minimizing fuel overheads and route overlaps by algorithmically clustering delivery destinations for local fleets.")
+# --- APP HEADER ---
+st.title("🏢 Flat Availability & Management Tracker")
+st.markdown("Track, filter, and manage apartment lease status and maintenance records in real-time.")
+st.write("---")
 
-# --- SIDEBAR CONFIGURATION ---
-st.sidebar.header("📦 Fleet Parameters")
-
-available_drivers = st.sidebar.slider(
-    "Number of Active Drivers (Fleets)",
-    min_value=2,
-    max_value=6,
-    value=3
+# --- SIDEBAR FILTERS ---
+st.sidebar.header("🔍 Filter Inventory")
+status_filter = st.sidebar.multiselect(
+    "Filter by Status:",
+    options=st.session_state.flats["Status"].unique(),
+    default=st.session_state.flats["Status"].unique()
+)
+bhk_filter = st.sidebar.multiselect(
+    "Filter by Config (BHK):",
+    options=st.session_state.flats["BHK"].unique(),
+    default=st.session_state.flats["BHK"].unique()
 )
 
-total_packages = st.sidebar.slider(
-    "Total Outstanding Packages Today",
-    min_value=10,
-    max_value=100,
-    value=40,
-    step=5
-)
+# Apply filters
+filtered_df = st.session_state.flats[
+    (st.session_state.flats["Status"].isin(status_filter)) &
+    (st.session_state.flats["BHK"].isin(bhk_filter))
+]
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("📍 Central Hub Coordinates")
-hub_lat = st.sidebar.number_input("Warehouse Latitude", value=19.0760)  # Defaults near Mumbai region
-hub_lon = st.sidebar.number_input("Warehouse Longitude", value=72.8777)
+# --- METRIC HERO TILES ---
+total_flats = len(st.session_state.flats)
+avail_flats = len(st.session_state.flats[st.session_state.flats["Status"] == "Available"])
+occ_flats = len(st.session_state.flats[st.session_state.flats["Status"] == "Occupied"])
+maint_flats = len(st.session_state.flats[st.session_state.flats["Status"] == "Maintenance"])
 
-# --- SIMULATE REAL RANDOM LOCATION POINTS ---
-@st.cache_data(ttl=600)
-def generate_delivery_points(num_points, h_lat, h_lon):
-    np.random.seed(42) # Keeps layout consistent across slider changes
-    # Generate random delivery drop-offs within a 15km radius of the warehouse hub
-    lats = h_lat + np.random.uniform(-0.1, 0.1, num_points)
-    lons = h_lon + np.random.uniform(-0.1, 0.1, num_points)
+m1, m2, m3, m4 = st.columns(4)
+with m1:
+    st.metric("Total Flats", total_flats)
+with m2:
+    st.metric("Available To Rent", avail_flats, delta=f"{avail_flats} open", delta_color="normal")
+with m3:
+    st.metric("Occupied", occ_flats)
+with m4:
+    st.metric("Under Maintenance", maint_flats)
+
+st.write("---")
+
+# --- TABS FOR WORKFLOWS ---
+tab_view, tab_manage = st.tabs(["📊 Inventory Dashboard", "⚙️ Update Flat Status"])
+
+with tab_view:
+    col_table, col_chart = st.columns([3, 2])
     
-    # Randomly assign package weights (kg) and urgency priorities
-    weights = np.random.uniform(0.5, 15.0, num_points)
-    priorities = np.random.choice(["Standard", "Express", "Same-Day Priority"], num_points, p=[0.5, 0.3, 0.2])
-    
-    return pd.DataFrame({
-        "Latitude": lats,
-        "Longitude": lons,
-        "Payload_Weight_KG": weights,
-        "Priority": priorities
-    })
-
-df_deliveries = generate_delivery_points(total_packages, hub_lat, hub_lon)
-
-# --- ALGORITHMIC CLUSTERING ENGINE (K-MEANS) ---
-# Coordinates vector matrix extraction
-X = df_deliveries[["Latitude", "Longitude"]]
-
-# Run KMeans clustering to assign packages to the closest geometric driver group
-kmeans = KMeans(n_clusters=available_drivers, random_state=42, n_init=10)
-df_deliveries["Driver_ID"] = kmeans.fit_predict(X) + 1 # Dynamic ID assignment (Driver 1, Driver 2...)
-
-# Calculate operational metrics
-total_weight = df_deliveries["Payload_Weight_KG"].sum()
-avg_packages_per_driver = total_packages / available_drivers
-
-# --- UI VIEW DISPLAY ---
-st.subheader("📊 Dispatch Operations Metrics")
-col1, col2, col3, col4 = st.columns(4)
-
-with col1:
-    st.metric("Total Fleet Size Assigned", f"{available_drivers} Active Drivers")
-with col2:
-    st.metric("Active Deliveries Routed", f"{total_packages} Drop-offs")
-with col3:
-    st.metric("Total Cargo manifest Weight", f"{total_weight:.1f} KG")
-with col4:
-    st.metric("Avg Load Per Driver", f"{avg_packages_per_driver:.1f} Parcels")
-
-st.markdown("---")
-
-# Split Dashboard Workspace Layout
-map_col, manifest_col = st.columns([3, 2])
-
-with map_col:
-    st.subheader("🗺️ Algorithmic Fleet Allocation Map")
-    st.caption("Each unique colored node group represents a highly optimized, distinct zone assigned to a separate delivery driver.")
-    
-    fig = go.Figure()
-    
-    # 1. Plot the Central Depot / Warehouse Hub
-    fig.add_trace(go.Scatter(
-        x=[hub_lon], y=[hub_lat],
-        mode='markers',
-        name='🏢 Central Logistics Hub',
-        marker=dict(size=16, color='#ef4444', symbol='square'),
-        hovertemplate="<b>Central Distribution Center</b><extra></extra>"
-    ))
-    
-    # 2. Plot clustered package allocations iteratively per assigned driver
-    colors = ['#10b981', '#3b82f6', '#8b5cf6', '#f59e0b', '#ec4899', '#14b8a6']
-    
-    for driver in range(1, available_drivers + 1):
-        driver_df = df_deliveries[df_deliveries["Driver_ID"] == driver]
-        color_assigned = colors[(driver - 1) % len(colors)]
+    with col_table:
+        st.subheader("Current Flat Registry")
+        # Visual color mapping formatting for clarity
+        st.dataframe(filtered_df, use_container_width=True, hide_index=True)
         
-        # Plot drop points
-        fig.add_trace(go.Scatter(
-            x=driver_df["Longitude"], y=driver_df["Latitude"],
-            mode='markers+text',
-            name=f"🚛 Driver Group {driver} Zone",
-            marker=dict(size=9, color=color_assigned, symbol='circle'),
-            hovertemplate="<b>Driver:</b> " + str(driver) + "<br><b>Weight:</b> %{text} KG<extra></extra>",
-            text=driver_df["Payload_Weight_KG"].round(1).astype(str)
-        ))
-        
-    fig.update_layout(
-        template='plotly_dark',
-        paper_bgcolor='rgba(0,0,0,0)',
-        plot_bgcolor='rgba(0,0,0,0)',
-        margin=dict(l=10, r=10, t=10, b=10),
-        height=480,
-        xaxis=dict(title="Longitude Coordinate Points", showgrid=True, gridcolor='#232a3b'),
-        yaxis=dict(title="Latitude Coordinate Points", showgrid=True, gridcolor='#232a3b'),
-        hovermode="closest"
-    )
-    st.plotly_chart(fig, use_container_width=True)
+    with col_chart:
+        st.subheader("Occupancy Breakdown")
+        if not filtered_df.empty:
+            fig = px.pie(
+                filtered_df, 
+                names="Status", 
+                title="Status Proportions",
+                color="Status",
+                color_discrete_map={"Available": "#2ECC71", "Occupied": "#3498DB", "Maintenance": "#E74C3C"}
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No flats match your filters.")
 
-with manifest_col:
-    st.subheader("📋 Digital Freight Manifest Sheets")
+with tab_manage:
+    st.subheader("Change Status / Log New Booking")
     
-    selected_driver_view = st.selectbox(
-        "Filter Checklist by Route Assignment:",
-        options=[f"Driver {i}" for i in range(1, available_drivers + 1)]
-    )
+    col_f, col_s, col_t = st.columns(3)
     
-    # Extract numerical index identifier
-    driver_num = int(selected_driver_view.split(" ")[1])
-    filtered_manifest = df_deliveries[df_deliveries["Driver_ID"] == driver_num]
+    with col_f:
+        selected_flat = st.selectbox("Select Flat Number:", st.session_state.flats["Flat_No"].tolist())
     
-    # Format and present clean layout lists
-    presentation_df = filtered_manifest[["Payload_Weight_KG", "Priority", "Latitude", "Longitude"]].copy()
-    presentation_df["Payload_Weight_KG"] = presentation_df["Payload_Weight_KG"].round(2).astype(str) + " kg"
+    # Extract current values for chosen flat
+    current_row = st.session_state.flats[st.session_state.flats["Flat_No"] == selected_flat].iloc[0]
     
-    st.markdown(f"**Total parcels assigned to this route:** {len(presentation_df)}")
-    st.dataframe(presentation_df, hide_index=True, use_container_width=True)
+    with col_s:
+        new_status = st.selectbox(
+            "Target Status:", 
+            options=["Available", "Occupied", "Maintenance"], 
+            index=["Available", "Occupied", "Maintenance"].index(current_row["Status"])
+        )
+        
+    with col_t:
+        # Enable or disable tenant entry based on selected status
+        if new_status == "Occupied":
+            default_tenant = "" if current_row["Tenant"] == "-" else current_row["Tenant"]
+            new_tenant = st.text_input("Tenant Full Name:", value=default_tenant)
+        else:
+            new_tenant = "-"
+            st.text_input("Tenant Full Name:", value="-", disabled=True)
+
+    if st.button("Commit Status Change", type="primary"):
+        # Locating the row index in the session state
+        idx = st.session_state.flats[st.session_state.flats["Flat_No"] == selected_flat].index[0]
+        
+        # Validations
+        if new_status == "Occupied" and (not new_tenant or new_tenant.strip() == "-"):
+            st.error("Please enter a valid tenant name for 'Occupied' status updates.")
+        else:
+            st.session_state.flats.at[idx, "Status"] = new_status
+            st.session_state.flats.at[idx, "Tenant"] = new_tenant
+            st.success(f"Successfully updated Flat {selected_flat} to {new_status}!")
+            st.rerun()
